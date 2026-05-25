@@ -7466,19 +7466,19 @@ function parseTSVSales(file, dateStr) {
 
       // Parse data rows
       let productsUpdated = 0;
-      let productsSkipped = 0;
-      
+      const unknownSkus = []; // { sku, qty } — not in registry
+
       for (let i = 1; i < lines.length; i++) {
         const cols = lines[i].split('\t');
         const fullSku = String(cols[skuIdx] || '').trim().toUpperCase();
         const qty = parseInt(cols[qtyIdx]) || 0;
-        
+
         if (!fullSku) continue;
 
-        // If a registry exists, only process SKUs that are in it
+        // If a registry exists, collect unrecognised SKUs for the popup
         const regKey = fullSku.toLowerCase();
         if (hasRegistry && !registryMap.has(regKey)) {
-          productsSkipped++;
+          unknownSkus.push({ sku: fullSku, qty });
           continue;
         }
 
@@ -7486,56 +7486,174 @@ function parseTSVSales(file, dateStr) {
         const regEntry = registryMap.get(regKey);
         const lockedName = regEntry ? regEntry.name : fullSku;
         const canonicalSku = regEntry ? regEntry.sku : fullSku;
-        
+
         // Try to match with existing sales product
         const existing = state.sales.find(s => String(s.sku || '').toUpperCase() === fullSku);
-        
+
         if (existing) {
-          // Update numbers — but lock name to registry value
           if (regEntry) existing.name = lockedName;
-          while (existing.values.length < 30) {
-            existing.values.push(0);
-          }
+          while (existing.values.length < 30) existing.values.push(0);
           existing.values.unshift(qty);
-          if (existing.values.length > 30) {
-            existing.values = existing.values.slice(0, 30);
-          }
+          if (existing.values.length > 30) existing.values = existing.values.slice(0, 30);
           productsUpdated++;
         } else {
-          // Create new product entry with locked name
-          const newProduct = {
-            sku: canonicalSku,
-            name: lockedName,
-            values: [qty],
-            restocks: [0]
-          };
-          state.sales.push(newProduct);
+          state.sales.push({ sku: canonicalSku, name: lockedName, values: [qty], restocks: [0] });
           productsUpdated++;
         }
       }
-      
-      if (productsUpdated === 0) {
-        const noMatchMsg = productsSkipped > 0
-          ? `No matching SKUs found · ${productsSkipped} unrecognised SKU${productsSkipped===1?'':'s'} skipped`
-          : 'No data imported';
-        toast(noMatchMsg);
+
+      // If there are unrecognised SKUs, show the popup — don't commit yet
+      if (unknownSkus.length > 0) {
+        showUnknownSKUsPopup(unknownSkus, productsUpdated, dateStr);
         return;
       }
-      
+
+      if (productsUpdated === 0) {
+        toast('No data imported');
+        return;
+      }
+
       // Update anchor date
       state.salesAnchorDate = dateStr;
       saveState();
       render();
-      
-      let msg = `Added sales for ${dateStr} · ${productsUpdated} SKU${productsUpdated===1?'':'s'} updated`;
-      if (productsSkipped > 0) msg += ` · ${productsSkipped} unrecognised skipped`;
-      toast(msg);
+
+      toast(`Added sales for ${dateStr} · ${productsUpdated} SKU${productsUpdated===1?'':'s'} updated`);
     } catch (err) {
       console.error('TSV parse error:', err);
       toast('Failed to parse TSV file');
     }
   };
   reader.readAsText(file);
+}
+
+/* ─── Unknown SKUs popup ────────────────────────────────────────────────── */
+function showUnknownSKUsPopup(unknownSkus, alreadyUpdated, dateStr) {
+  const overlay = document.createElement('div');
+  overlay.className = 'transfer-overlay';
+  overlay.style.cssText = 'display:flex;z-index:9999;';
+
+  const rows = unknownSkus.map((u, i) => `
+    <tr>
+      <td style="font-family:monospace;font-size:12px;padding:7px 10px 7px 0;">${escapeHtml(u.sku)}</td>
+      <td style="padding:7px 0;">
+        <input
+          type="text"
+          data-idx="${i}"
+          class="unk-sku-name"
+          placeholder="Product name (optional)"
+          value="${escapeHtml(u.sku)}"
+          style="width:100%;padding:5px 8px;border:1px solid var(--line);border-radius:var(--radius);font-size:12px;font-family:inherit;background:var(--white);color:var(--ink);"
+        />
+      </td>
+      <td style="text-align:right;font-size:12px;color:var(--ink-mute);padding:7px 0 7px 12px;">${fmtNum(u.qty)}</td>
+    </tr>`).join('');
+
+  overlay.innerHTML = `
+    <div class="transfer-modal" style="max-width:620px;width:92vw;">
+      <h2 style="font-size:18px;margin-bottom:6px;">&#9888;&#65039; ${unknownSkus.length} unrecognised SKU${unknownSkus.length===1?'':'s'} detected</h2>
+      <p style="font-size:13px;color:var(--ink-mute);margin-bottom:18px;">
+        These SKUs from your TSV aren't in the registry yet.
+        Give them a display name, then click <strong>Add to Registry</strong> —
+        they'll be registered and added to your DayOne warehouse automatically.
+        ${alreadyUpdated > 0 ? `<br><span style="color:var(--status-healthy);">&#10003; ${alreadyUpdated} known SKU${alreadyUpdated===1?'':'s'} already imported.</span>` : ''}
+      </p>
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--line);">
+            <th style="text-align:left;font-size:11px;color:var(--ink-mute);font-weight:500;padding-bottom:6px;">SKU</th>
+            <th style="text-align:left;font-size:11px;color:var(--ink-mute);font-weight:500;padding-bottom:6px;">Display Name</th>
+            <th style="text-align:right;font-size:11px;color:var(--ink-mute);font-weight:500;padding-bottom:6px;">Qty</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="transfer-modal-actions" style="margin-top:20px;gap:10px;">
+        <button class="btn btn-primary" id="unk-sku-add-btn">
+          &#x2795; Add ${unknownSkus.length} SKU${unknownSkus.length===1?'':'s'} to Registry
+        </button>
+        <button class="btn" id="unk-sku-skip-btn" style="color:var(--ink-mute);">
+          Skip &amp; continue without them
+        </button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+  overlay.querySelector('#unk-sku-skip-btn').addEventListener('click', () => {
+    overlay.remove();
+    if (alreadyUpdated > 0) {
+      state.salesAnchorDate = dateStr;
+      saveState();
+      render();
+      toast(`Added sales for ${dateStr} · ${alreadyUpdated} SKU${alreadyUpdated===1?'':'s'} updated · ${unknownSkus.length} skipped`);
+    } else {
+      toast(`${unknownSkus.length} SKU${unknownSkus.length===1?'':'s'} skipped · nothing imported`);
+    }
+  });
+
+  overlay.querySelector('#unk-sku-add-btn').addEventListener('click', () => {
+    if (!Array.isArray(state.adsSKURegistry)) state.adsSKURegistry = [];
+    const wh = ensureWHWarehouse('dayone');
+
+    const nameInputs = overlay.querySelectorAll('.unk-sku-name');
+    let registryAdded = 0, warehouseAdded = 0, salesAdded = 0;
+
+    unknownSkus.forEach((u, i) => {
+      const nameVal = (nameInputs[i] ? nameInputs[i].value.trim() : '') || u.sku;
+
+      // 1. Add to registry
+      const alreadyReg = state.adsSKURegistry.find(r =>
+        String(r.sku || '').toLowerCase() === u.sku.toLowerCase());
+      if (!alreadyReg) {
+        state.adsSKURegistry.push({ sku: u.sku, name: nameVal });
+        registryAdded++;
+      }
+
+      // 2. Add to DayOne warehouse (customized) if not already present
+      const allWhItems = [
+        ...(wh.customized || []),
+        ...(wh.whitelabel  || []),
+        ...(wh.packaging   || [])
+      ];
+      const alreadyInWH = allWhItems.find(c =>
+        String(c.sku || '').toLowerCase() === u.sku.toLowerCase());
+      if (!alreadyInWH) {
+        if (!Array.isArray(wh.customized)) wh.customized = [];
+        wh.customized.unshift({
+          id: uid('wh_'),
+          sku: u.sku,
+          name: nameVal,
+          quantity: 0,
+          photo: '',
+          transferredToDayOne: 0
+        });
+        warehouseAdded++;
+      }
+
+      // 3. Add to sales data
+      const existing = state.sales.find(s =>
+        String(s.sku || '').toUpperCase() === u.sku.toUpperCase());
+      if (existing) {
+        while (existing.values.length < 30) existing.values.push(0);
+        existing.values.unshift(u.qty);
+        if (existing.values.length > 30) existing.values = existing.values.slice(0, 30);
+      } else {
+        state.sales.push({ sku: u.sku, name: nameVal, values: [u.qty], restocks: [0] });
+      }
+      salesAdded++;
+    });
+
+    state.salesAnchorDate = dateStr;
+    saveState();
+    render();
+    overlay.remove();
+
+    const total = alreadyUpdated + salesAdded;
+    toast(`&#10003; ${registryAdded} added to registry · ${warehouseAdded} added to DayOne · ${total} total imported`);
+  });
 }
 
 function triggerAddSKUs() {
