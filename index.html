@@ -7533,21 +7533,36 @@ function showUnknownSKUsPopup(unknownSkus, alreadyUpdated, dateStr) {
   overlay.className = 'transfer-overlay';
   overlay.style.cssText = 'display:flex;z-index:9999;';
 
-  const rows = unknownSkus.map((u, i) => `
+  const whDayOne = ensureWHWarehouse('dayone');
+  const whBS     = ensureWHWarehouse('bs');
+
+  const rows = unknownSkus.map((u, i) => {
+    // Look up existing warehouse card for name pre-fill
+    const allItems = [
+      ...(whDayOne.customized || []), ...(whDayOne.whitelabel || []), ...(whDayOne.packaging || []),
+      ...(whBS.customized     || []), ...(whBS.whitelabel     || []), ...(whBS.packaging     || [])
+    ];
+    const existing = allItems.find(c => String(c.sku || '').toLowerCase() === u.sku.toLowerCase());
+    const prefillName = existing ? (existing.name || u.sku) : u.sku;
+    const whBadge = existing
+      ? `<span style="font-size:10px;background:var(--status-healthy-bg);color:var(--status-healthy);border-radius:4px;padding:2px 6px;margin-left:6px;white-space:nowrap;">✓ in warehouse</span>`
+      : '';
+    return `
     <tr>
-      <td style="font-family:monospace;font-size:12px;padding:7px 10px 7px 0;">${escapeHtml(u.sku)}</td>
+      <td style="font-family:monospace;font-size:12px;padding:7px 10px 7px 0;white-space:nowrap;">${escapeHtml(u.sku)}${whBadge}</td>
       <td style="padding:7px 0;">
         <input
           type="text"
           data-idx="${i}"
           class="unk-sku-name"
           placeholder="Product name (optional)"
-          value="${escapeHtml(u.sku)}"
+          value="${escapeHtml(prefillName)}"
           style="width:100%;padding:5px 8px;border:1px solid var(--line);border-radius:var(--radius);font-size:12px;font-family:inherit;background:var(--white);color:var(--ink);"
         />
       </td>
       <td style="text-align:right;font-size:12px;color:var(--ink-mute);padding:7px 0 7px 12px;">${fmtNum(u.qty)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   overlay.innerHTML = `
     <div class="transfer-modal" style="max-width:620px;width:92vw;">
@@ -7596,7 +7611,8 @@ function showUnknownSKUsPopup(unknownSkus, alreadyUpdated, dateStr) {
 
   overlay.querySelector('#unk-sku-add-btn').addEventListener('click', () => {
     if (!Array.isArray(state.adsSKURegistry)) state.adsSKURegistry = [];
-    const wh = ensureWHWarehouse('dayone');
+    const whDayOne = ensureWHWarehouse('dayone');
+    const whBS     = ensureWHWarehouse('bs');
 
     const nameInputs = overlay.querySelectorAll('.unk-sku-name');
     let registryAdded = 0, warehouseAdded = 0, salesAdded = 0;
@@ -7612,17 +7628,16 @@ function showUnknownSKUsPopup(unknownSkus, alreadyUpdated, dateStr) {
         registryAdded++;
       }
 
-      // 2. Add to DayOne warehouse (customized) if not already present
+      // 2. Check BOTH warehouses (BS + DayOne) across all sections before adding
       const allWhItems = [
-        ...(wh.customized || []),
-        ...(wh.whitelabel  || []),
-        ...(wh.packaging   || [])
+        ...(whDayOne.customized || []), ...(whDayOne.whitelabel || []), ...(whDayOne.packaging || []),
+        ...(whBS.customized     || []), ...(whBS.whitelabel     || []), ...(whBS.packaging     || [])
       ];
       const alreadyInWH = allWhItems.find(c =>
         String(c.sku || '').toLowerCase() === u.sku.toLowerCase());
       if (!alreadyInWH) {
-        if (!Array.isArray(wh.customized)) wh.customized = [];
-        wh.customized.unshift({
+        if (!Array.isArray(whDayOne.customized)) whDayOne.customized = [];
+        whDayOne.customized.unshift({
           id: uid('wh_'),
           sku: u.sku,
           name: nameVal,
